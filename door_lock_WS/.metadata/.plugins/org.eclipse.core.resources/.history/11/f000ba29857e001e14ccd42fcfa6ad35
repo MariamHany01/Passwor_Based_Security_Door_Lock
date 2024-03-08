@@ -1,0 +1,251 @@
+/*
+ * hmi_ecu.c
+ *
+ *  Created on: 2 Nov 2023
+ *      Author: Mariam Hany
+ */
+/***************************************************************************
+				important includes
+ ****************************************************************************/
+#include "std_types.h"
+#include "hmi_ecu.h"
+#include "keypad.h"
+#include "lcd.h"
+#include "uart.h"
+#include "timer1.h"
+#include "avr/io.h"
+#include "util/delay.h"
+/***************************************************************************
+ 	 	 	 	 Global variables
+ ***************************************************************************/
+
+STEP g_step=SET_PASS; /* variable to know which step you re going to do */
+
+volatile static uint8 g_tick=0; /*global variables to count timer ticks*/
+/****************************************************************
+ 	 	 	 private functions prototype
+ ****************************************************************/
+static void opeen_door_screens_timer_control(void);
+static void freezeApp(void);
+/*************************************************************************
+ 	 	 	 	 	 	function definition
+ *************************************************************************/
+int main (void){
+	uint8 choice;/* variable to store in the step taken from user (+:open the door/- :set pass)*/
+
+
+	LCD_init();
+	UART_ConfigType uart1={EIGHT_BIT,DISABLED,ONE_BIT,9600};/* set the configurations of the uart */
+	Timer1_ConfigTypes timer={0,23500,CLK_1024,CTC };/* set timer config */
+
+
+	UART_init(&uart1);
+	SREG |=(1<<7);/* enable I_bit */
+
+
+	while (1){
+
+		switch (g_step){
+		/* setting pass case */
+		case SET_PASS:
+			LCD_clearScreen();
+			CreatePass();
+			/* recieve the next step from control ecu if 2 pass matched :go to main
+			 * options else go to set pass again
+			 */
+			UART_sendByte(HMI_ECU_READY);
+			g_step=UART_recieveByte();
+			break;
+
+
+		case MAIN_OPTION:
+			LCD_clearScreen();
+
+			/*  display the main system options */
+			LCD_displayStringRowColumn(0,0,"+ : Open Door ");
+			LCD_displayStringRowColumn(1,0,"- : Change Pass ");
+
+
+			/* Not allowing any value except the two options */
+			do
+			{
+				choice = KEYPAD_getPressedKey();
+
+			}while(choice != '+' && choice != '-');
+
+
+			if (choice=='+'){
+				/* send the choice to the control ecu */
+				UART_sendByte(HMI_ECU_READY);
+				UART_sendByte(OPEN_THE_DOOR);
+
+
+			}
+			else if (choice=='-'){
+				/* send the choice to the control ecu */
+				UART_sendByte(HMI_ECU_READY);
+				UART_sendByte(SET_PASS);
+
+			}
+			_delay_ms(500);
+
+			g_step=ENTER_PASS;
+			break;
+
+		case ENTER_PASS:
+			LCD_clearScreen();
+			EnterPass();
+			/* recieve the next step state from the control_ecu
+				 * matched from trials <3:go to choice non matched
+				 * with trials <3 :go to enter pass again ,non matched
+				 * with trials >=3: freez error state
+				 */
+			while (UART_recieveByte()!=CONTROL_ECU_READY);
+			g_step=UART_recieveByte();
+			break;
+
+		case OPEN_THE_DOOR:
+
+			LCD_clearScreen();
+
+			/* calculate the timer tick:
+			 * Ftimer=Fcpu/N=8MG/N
+			 * Ttimer=1/Ftimer=N/8MG
+			 * Tcmp=cmp_val*Timer=cmp_val*(N/8MG)=3 sec
+			 * assume N=1024 ->cmp_val=7
+			 */
+			Timer1_SetCallBack(&opeen_door_screens_timer_control);
+
+			Timer1_init(&timer);
+			LCD_displayStringRowColumn(0,0,"Door unlocking");
+			_delay_ms(500);
+
+			/* freeze to do nothing except the interrupt routine */
+			g_step=ERROR_FREEZ;
+			break;
+
+		case WRONG_PASS:
+			LCD_clearScreen();
+			LCD_displayStringRowColumn(0,0,"Error");
+			Timer1_SetCallBack(freezeApp);
+			timer.compare_value=47000;
+			Timer1_init(&timer);
+			g_step=ERROR_FREEZ;
+
+			break;
+
+		case ERROR_FREEZ:
+			/* do nothing in case of freeze */
+
+			break;
+		}
+
+
+
+
+	}
+
+}
+/************************************************************************************************
+ 	 	 	 	 	 	 functions definitions
+ ***********************************************************************************************/
+
+/* function that create pass no input or output*/
+void CreatePass(void){/* create a system password*/
+
+	uint8 i;/* counter that loop over the pass len */
+
+	LCD_displayStringRowColumn(0,0,"Plz enter pass:");
+	LCD_moveCursor(1,0);
+
+
+
+	for (i=0;i<PASS_LEN;i++){
+		/* waits for ready statement for control to receive the first entered pass */
+		while (UART_recieveByte()!=CONTROL_ECU_READY);
+		UART_sendByte(KEYPAD_getPressedKey());/* send the pressed key by the user */
+		LCD_displayCharacter('*');/* display the pressed keys as * */
+		_delay_ms(500);/* delay in order not to take the same pressed key more than once */
+	}
+	/* wait until enter is pressed to reenter the pass */
+	while (KEYPAD_getPressedKey()!=ENTER_BUTON);/* wait until enter btn is pressed */
+	_delay_ms(500);
+
+	/* take the pass once more for approving  */
+	LCD_displayStringRowColumn(0,0,"Plz re_enter the");
+	LCD_displayStringRowColumn(1,0,"same pass:");
+
+	while (UART_recieveByte()!=CONTROL_ECU_READY);
+	/* take the re_ntered pass and send it to mc2 */
+	for (i=0;i<PASS_LEN;i++){
+		while (UART_recieveByte()!=CONTROL_ECU_READY);
+
+		UART_sendByte(KEYPAD_getPressedKey());/* send the pressed key by the user */
+		LCD_displayCharacter('*');/* display the pressed keys as * */
+		_delay_ms(500);/* delay in order not to take the same pressed key more than once */
+	}
+	/* wait until enter is pressed to to go to the next step  */
+	while (KEYPAD_getPressedKey()!=ENTER_BUTON);/* wait until enter btn is pressed */
+	_delay_ms(500);
+}
+
+/*Description :
+ * fn that to take pass from the user and pass it to mc2*/
+void EnterPass (void){
+	uint8 i;/* counter to loop over the len of pass */
+	uint8 pass[PASS_LEN];/* generate an array to store in the entered pass */
+	LCD_displayStringRowColumn(0,0,"Plz enter pass:");
+	LCD_moveCursor(1,0);
+
+	/* get the pass from the user */
+	/*loop to get 5 characters of the password and sent display them on the screeen as '*' a*/
+
+	for (i=0;i<PASS_LEN;i++){
+		pass[i]=KEYPAD_getPressedKey();
+		LCD_displayCharacter('*');
+		_delay_ms(500);
+	}
+	/* wait until enter key is pressed to send the pass to control mcu */
+	while (KEYPAD_getPressedKey()!=ENTER_BUTON);
+	_delay_ms(500);
+	/* send ready statement to contro;_mcu to receive the pass entered */
+	UART_sendByte(HMI_ECU_READY);
+	/* pass the pass digit by digit */
+	for(i=0;i<PASS_LEN;i++){
+		UART_sendByte(pass[i]);
+	}
+}
+
+/*display the door unlock statement for 15 sec then display dor is unlockedg for 3sec
+ * then display door is locking  statement for 15 sec
+ */
+void opeen_door_screens_timer_control(void){
+/* increment the tick every time 1tick=3sec */
+	g_tick++;
+	if (g_tick==5){ /* 15 sec passed */
+		LCD_clearScreen();
+		LCD_displayStringRowColumn(0,0,"Door is unlocked");
+	}
+	else if (g_tick==6){ /* 18 sec passed */
+		LCD_clearScreen();
+		LCD_displayStringRowColumn(0,0,"Door is locking");
+	}
+	else if (g_tick==11){ /*33 sec passed */
+		LCD_clearScreen();
+		g_tick = 0;
+		Timer1_deInit();
+		g_step = MAIN_OPTION;/* back to main options */
+	}
+}
+
+/*description :to freeze the app for 1 min (60sec) */
+void freezeApp(void ){
+	/* increment the ticks each time 1tick=6sec */
+	g_tick++;
+
+	if (g_tick==10){ /*1 min passed */
+		Timer1_deInit();
+		g_tick=0;
+		g_step=MAIN_OPTION;
+	}
+}
