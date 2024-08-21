@@ -60,10 +60,3 @@ The LCD displays the following options:
 - **DC Motor**
 - **UART Communication** between HMI_ECU and Control_ECU
 
-## Installation & Usage
-1. Flash the respective code onto the two ATmega32 microcontrollers.
-2. Connect peripherals as described in the architecture section.
-3. Power up the system and follow on-screen prompts to set up and use the security door lock.
-
-## License
-This project is licensed under the MIT License. See the `LICENSE` file for details.
