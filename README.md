@@ -1,4 +1,5 @@
 # Password-Based Security Door Lock on ATmega16
+![Circuit Simulation](images/Screenshot.png)
 
 ## Overview
 This project implements a password-based security door lock system using two ATmega32 microcontrollers operating at 8MHz. The system is designed with a layered architecture to separate user interaction from control logic.
